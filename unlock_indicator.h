@@ -28,6 +28,7 @@ typedef struct status {
     unlock_state_t unlock_state;
     modifiers_t modifiers;
     int failed_attempts;
+    uint32_t resolution[2];
 } status_t;
 
 typedef struct ui_opts {
@@ -37,7 +38,7 @@ typedef struct ui_opts {
     char color[7];
 } ui_opts_t;
 
-xcb_pixmap_t draw_image(uint32_t* resolution, const status_t *status, const ui_opts_t *ui_opts);
+xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts);
 void redraw_screen(const status_t *status, const ui_opts_t *ui_opts);
 
 #endif

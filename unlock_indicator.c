@@ -35,9 +35,6 @@ extern bool debug_mode;
 /* The lock window. */
 extern xcb_window_t win;
 
-/* The current resolution of the X11 root window. */
-extern uint32_t last_resolution[2];
-
 /* A Cairo surface containing the specified image (-i), if any. */
 extern cairo_surface_t *img;
 
@@ -91,7 +88,7 @@ static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
  * resolution and returns it.
  *
  */
-xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_opts_t *ui_opts) {
+xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts) {
     xcb_pixmap_t bg_pixmap = XCB_NONE;
     int button_diameter_physical = ceil(scaling_factor() * BUTTON_DIAMETER);
     DEBUG("scaling_factor is %.f, physical diameter is %d px\n",
@@ -99,14 +96,14 @@ xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_o
 
     if (!vistype)
         vistype = get_root_visual_type(screen);
-    bg_pixmap = create_bg_pixmap(conn, screen, resolution, (char *)ui_opts->color);
+    bg_pixmap = create_bg_pixmap(conn, screen, (uint32_t *)status->resolution, (char *)ui_opts->color);
     /* Initialize cairo: Create one in-memory surface to render the unlock
      * indicator on, create one XCB surface to actually draw (one or more,
      * depending on the amount of screens) unlock indicators on. */
     cairo_surface_t *output = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, button_diameter_physical, button_diameter_physical);
     cairo_t *ctx = cairo_create(output);
 
-    cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, vistype, resolution[0], resolution[1]);
+    cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, vistype, status->resolution[0], status->resolution[1]);
     cairo_t *xcb_ctx = cairo_create(xcb_output);
 
     if (img) {
@@ -119,7 +116,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_o
             pattern = cairo_pattern_create_for_surface(img);
             cairo_set_source(xcb_ctx, pattern);
             cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
-            cairo_rectangle(xcb_ctx, 0, 0, resolution[0], resolution[1]);
+            cairo_rectangle(xcb_ctx, 0, 0, status->resolution[0], status->resolution[1]);
             cairo_fill(xcb_ctx);
             cairo_pattern_destroy(pattern);
         }
@@ -131,7 +128,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_o
                              (strtol(strgroups[1], NULL, 16)),
                              (strtol(strgroups[2], NULL, 16))};
         cairo_set_source_rgb(xcb_ctx, rgb16[0] / 255.0, rgb16[1] / 255.0, rgb16[2] / 255.0);
-        cairo_rectangle(xcb_ctx, 0, 0, resolution[0], resolution[1]);
+        cairo_rectangle(xcb_ctx, 0, 0, status->resolution[0], status->resolution[1]);
         cairo_fill(xcb_ctx);
     }
 
@@ -302,8 +299,8 @@ xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_o
         /* We have no information about the screen sizes/positions, so we just
          * place the unlock indicator in the middle of the X root window and
          * hope for the best. */
-        int x = (last_resolution[0] / 2) - (button_diameter_physical / 2);
-        int y = (last_resolution[1] / 2) - (button_diameter_physical / 2);
+        int x = (status->resolution[0] / 2) - (button_diameter_physical / 2);
+        int y = (status->resolution[1] / 2) - (button_diameter_physical / 2);
         cairo_set_source_surface(xcb_ctx, output, x, y);
         cairo_rectangle(xcb_ctx, x, y, button_diameter_physical, button_diameter_physical);
         cairo_fill(xcb_ctx);
@@ -322,11 +319,11 @@ xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_o
  */
 void redraw_screen(const status_t *status, const ui_opts_t *ui_opts) {
     DEBUG("redraw_screen(unlock_state = %d, pam_state = %d)\n", status->unlock_state, status->pam_state);
-    xcb_pixmap_t bg_pixmap = draw_image(last_resolution, status, ui_opts);
+    xcb_pixmap_t bg_pixmap = draw_image(status, ui_opts);
     xcb_change_window_attributes(conn, win, XCB_CW_BACK_PIXMAP, (uint32_t[1]){bg_pixmap});
     /* XXX: Possible optimization: Only update the area in the middle of the
      * screen instead of the whole screen. */
-    xcb_clear_area(conn, 0, win, 0, 0, last_resolution[0], last_resolution[1]);
+    xcb_clear_area(conn, 0, win, 0, 0, status->resolution[0], status->resolution[1]);
     xcb_free_pixmap(conn, bg_pixmap);
     xcb_flush(conn);
 }

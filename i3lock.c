@@ -45,7 +45,6 @@
 typedef void (*ev_callback_t)(EV_P_ ev_timer *w, int revents);
 
 int inactivity_timeout = 30;
-uint32_t last_resolution[2];
 xcb_window_t win;
 static xcb_cursor_t cursor;
 static pam_handle_t *pam_handle;
@@ -564,21 +563,21 @@ void handle_screen_resize(void) {
     if ((geom = xcb_get_geometry_reply(conn, geomc, 0)) == NULL)
         return;
 
-    if (last_resolution[0] == geom->width &&
-        last_resolution[1] == geom->height) {
+    if (status.resolution[0] == geom->width &&
+        status.resolution[1] == geom->height) {
         free(geom);
         return;
     }
 
-    last_resolution[0] = geom->width;
-    last_resolution[1] = geom->height;
+    status.resolution[0] = geom->width;
+    status.resolution[1] = geom->height;
 
     free(geom);
 
     redraw_screen(&status, &ui_opts);
 
     uint32_t mask = XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
-    xcb_configure_window(conn, win, mask, last_resolution);
+    xcb_configure_window(conn, win, mask, status.resolution);
     xcb_flush(conn);
 
     xinerama_query_screens();
@@ -948,8 +947,8 @@ int main(int argc, char *argv[]) {
 
     screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
 
-    last_resolution[0] = screen->width_in_pixels;
-    last_resolution[1] = screen->height_in_pixels;
+    status.resolution[0] = screen->width_in_pixels;
+    status.resolution[1] = screen->height_in_pixels;
 
     xcb_change_window_attributes(conn, screen->root, XCB_CW_EVENT_MASK,
                                  (uint32_t[]){XCB_EVENT_MASK_STRUCTURE_NOTIFY});
@@ -966,7 +965,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* Pixmap on which the image is rendered to (if any) */
-    xcb_pixmap_t bg_pixmap = draw_image(last_resolution, &status, &ui_opts);
+    xcb_pixmap_t bg_pixmap = draw_image(&status, &ui_opts);
 
     /* open the fullscreen window, already with the correct pixmap in place */
     win = open_fullscreen_window(conn, screen, ui_opts.color, bg_pixmap);
