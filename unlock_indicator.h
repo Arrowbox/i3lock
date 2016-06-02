@@ -16,8 +16,28 @@ typedef enum {
     STATE_PAM_WRONG = 2   /* the password was wrong */
 } pam_state_t;
 
-xcb_pixmap_t draw_image(uint32_t* resolution);
-void redraw_screen(void);
-void clear_indicator(void);
+typedef struct modifiers {
+    bool caps;
+    bool alt;
+    bool num;
+    bool logo;
+} modifiers_t;
+
+typedef struct status {
+    pam_state_t pam_state;
+    unlock_state_t unlock_state;
+    modifiers_t modifiers;
+    int failed_attempts;
+} status_t;
+
+typedef struct ui_opts {
+    bool tile;
+    bool show_failed_attempts;
+    bool unlock_indicator;
+    char color[7];
+} ui_opts_t;
+
+xcb_pixmap_t draw_image(uint32_t* resolution, const status_t *status, const ui_opts_t *ui_opts);
+void redraw_screen(const status_t *status, const ui_opts_t *ui_opts);
 
 #endif

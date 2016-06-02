@@ -44,7 +44,6 @@
 
 typedef void (*ev_callback_t)(EV_P_ ev_timer *w, int revents);
 
-char color[7] = "ffffff";
 int inactivity_timeout = 30;
 uint32_t last_resolution[2];
 xcb_window_t win;
@@ -55,17 +54,30 @@ int input_position = 0;
 static char password[512];
 static bool beep = false;
 bool debug_mode = false;
-bool unlock_indicator = true;
-char *modifier_string = NULL;
 static bool dont_fork = false;
 struct ev_loop *main_loop;
 static struct ev_timer *clear_pam_wrong_timeout;
 static struct ev_timer *clear_indicator_timeout;
 static struct ev_timer *discard_passwd_timeout;
-extern unlock_state_t unlock_state;
-extern pam_state_t pam_state;
-int failed_attempts = 0;
-bool show_failed_attempts = false;
+
+static status_t status = {
+    .pam_state = STATE_PAM_IDLE,
+    .unlock_state = STATE_STARTED,
+    .modifiers = {
+        .caps = false,
+        .alt = false,
+        .num = false,
+        .logo = false,
+    },
+    .failed_attempts = 0,
+};
+
+static ui_opts_t ui_opts = {
+    .show_failed_attempts = false,
+    .unlock_indicator = true,
+    .color = "ffffff",
+    .tile = false,
+};
 
 static struct xkb_state *xkb_state;
 static struct xkb_context *xkb_context;
@@ -76,7 +88,6 @@ static uint8_t xkb_base_event;
 static uint8_t xkb_base_error;
 
 cairo_surface_t *img = NULL;
-bool tile = false;
 bool ignore_empty_password = false;
 bool skip_repeated_empty_password = false;
 
@@ -200,21 +211,21 @@ ev_timer *stop_timer(ev_timer *timer_obj) {
  */
 static void clear_pam_wrong(EV_P_ ev_timer *w, int revents) {
     DEBUG("clearing pam wrong\n");
-    pam_state = STATE_PAM_IDLE;
-    redraw_screen();
-
-    /* Clear modifier string. */
-    if (modifier_string != NULL) {
-        free(modifier_string);
-        modifier_string = NULL;
-    }
+    status.pam_state = STATE_PAM_IDLE;
+    redraw_screen(&status, &ui_opts);
 
     /* Now free this timeout. */
     STOP_TIMER(clear_pam_wrong_timeout);
 }
 
 static void clear_indicator_cb(EV_P_ ev_timer *w, int revents) {
-    clear_indicator();
+    if (input_position == 0) {
+        status.unlock_state = STATE_STARTED;
+    } else {
+        status.unlock_state = STATE_KEY_PRESSED;
+    }
+    redraw_screen(&status, &ui_opts);
+
     STOP_TIMER(clear_indicator_timeout);
 }
 
@@ -231,9 +242,9 @@ static void discard_passwd_cb(EV_P_ ev_timer *w, int revents) {
 
 static void input_done(void) {
     STOP_TIMER(clear_pam_wrong_timeout);
-    pam_state = STATE_PAM_VERIFY;
-    unlock_state = STATE_STARTED;
-    redraw_screen();
+    status.pam_state = STATE_PAM_VERIFY;
+    status.unlock_state = STATE_STARTED;
+    redraw_screen(&status, &ui_opts);
 
     if (pam_authenticate(pam_handle, 0) == PAM_SUCCESS) {
         DEBUG("successfully authenticated\n");
@@ -259,6 +270,10 @@ static void input_done(void) {
 
     num_mods = xkb_keymap_num_mods(xkb_keymap);
 
+    status.modifiers.caps = false;
+    status.modifiers.alt = false;
+    status.modifiers.num = false;
+    status.modifiers.logo = false;
     for (idx = 0; idx < num_mods; idx++) {
         if (!xkb_state_mod_index_is_active(xkb_state, idx, XKB_STATE_MODS_EFFECTIVE))
             continue;
@@ -269,29 +284,20 @@ static void input_done(void) {
 
         /* Replace certain xkb names with nicer, human-readable ones. */
         if (strcmp(mod_name, XKB_MOD_NAME_CAPS) == 0)
-            mod_name = "Caps Lock";
+            status.modifiers.caps = true;
         else if (strcmp(mod_name, XKB_MOD_NAME_ALT) == 0)
-            mod_name = "Alt";
+            status.modifiers.alt = true;
         else if (strcmp(mod_name, XKB_MOD_NAME_NUM) == 0)
-            mod_name = "Num Lock";
+            status.modifiers.num = true;
         else if (strcmp(mod_name, XKB_MOD_NAME_LOGO) == 0)
-            mod_name = "Win";
-
-        char *tmp;
-        if (modifier_string == NULL) {
-            if (asprintf(&tmp, "%s", mod_name) != -1)
-                modifier_string = tmp;
-        } else if (asprintf(&tmp, "%s, %s", modifier_string, mod_name) != -1) {
-            free(modifier_string);
-            modifier_string = tmp;
-        }
+            status.modifiers.logo = true;
     }
 
-    pam_state = STATE_PAM_WRONG;
-    failed_attempts += 1;
+    status.pam_state = STATE_PAM_WRONG;
+    status.failed_attempts += 1;
     clear_input();
-    if (unlock_indicator)
-        redraw_screen();
+    if (ui_opts.unlock_indicator)
+        redraw_screen(&status, &ui_opts);
 
     /* Clear this state after 2 seconds (unless the user enters another
      * password during that time). */
@@ -310,7 +316,7 @@ static void input_done(void) {
 }
 
 static void redraw_timeout(EV_P_ ev_timer *w, int revents) {
-    redraw_screen();
+    redraw_screen(&status, &ui_opts);
     STOP_TIMER(w);
 }
 
@@ -374,7 +380,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
             if (ksym == XKB_KEY_j && !ctrl)
                 break;
 
-            if (pam_state == STATE_PAM_WRONG)
+            if (status.pam_state == STATE_PAM_WRONG)
                 return;
 
             if (skip_without_validation()) {
@@ -382,8 +388,8 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 return;
             }
             password[input_position] = '\0';
-            unlock_state = STATE_KEY_PRESSED;
-            redraw_screen();
+            status.unlock_state = STATE_KEY_PRESSED;
+            redraw_screen(&status, &ui_opts);
             input_done();
             skip_repeated_empty_password = true;
             return;
@@ -400,11 +406,11 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 clear_input();
                 /* Hide the unlock indicator after a bit if the password buffer is
                  * empty. */
-                if (unlock_indicator) {
+                if (ui_opts.unlock_indicator) {
                     START_TIMER(clear_indicator_timeout, 1.0, clear_indicator_cb);
-                    unlock_state = STATE_BACKSPACE_ACTIVE;
-                    redraw_screen();
-                    unlock_state = STATE_KEY_PRESSED;
+                    status.unlock_state = STATE_BACKSPACE_ACTIVE;
+                    redraw_screen(&status, &ui_opts);
+                    status.unlock_state = STATE_KEY_PRESSED;
                 }
                 return;
             }
@@ -433,9 +439,9 @@ static void handle_key_press(xcb_key_press_event_t *event) {
             /* Hide the unlock indicator after a bit if the password buffer is
              * empty. */
             START_TIMER(clear_indicator_timeout, 1.0, clear_indicator_cb);
-            unlock_state = STATE_BACKSPACE_ACTIVE;
-            redraw_screen();
-            unlock_state = STATE_KEY_PRESSED;
+            status.unlock_state = STATE_BACKSPACE_ACTIVE;
+            redraw_screen(&status, &ui_opts);
+            status.unlock_state = STATE_KEY_PRESSED;
             return;
     }
 
@@ -461,10 +467,10 @@ static void handle_key_press(xcb_key_press_event_t *event) {
     input_position += n - 1;
     DEBUG("current password = %.*s\n", input_position, password);
 
-    if (unlock_indicator) {
-        unlock_state = STATE_KEY_ACTIVE;
-        redraw_screen();
-        unlock_state = STATE_KEY_PRESSED;
+    if (ui_opts.unlock_indicator) {
+        status.unlock_state = STATE_KEY_ACTIVE;
+        redraw_screen(&status, &ui_opts);
+        status.unlock_state = STATE_KEY_PRESSED;
 
         struct ev_timer *timeout = NULL;
         START_TIMER(timeout, TSTAMP_N_SECS(0.25), redraw_timeout);
@@ -569,14 +575,14 @@ void handle_screen_resize(void) {
 
     free(geom);
 
-    redraw_screen();
+    redraw_screen(&status, &ui_opts);
 
     uint32_t mask = XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
     xcb_configure_window(conn, win, mask, last_resolution);
     xcb_flush(conn);
 
     xinerama_query_screens();
-    redraw_screen();
+    redraw_screen(&status, &ui_opts);
 }
 
 /*
@@ -819,19 +825,19 @@ int main(int argc, char *argv[]) {
                 if (arg[0] == '#')
                     arg++;
 
-                if (strlen(arg) != 6 || sscanf(arg, "%06[0-9a-fA-F]", color) != 1)
+                if (strlen(arg) != 6 || sscanf(arg, "%06[0-9a-fA-F]", ui_opts.color) != 1)
                     errx(EXIT_FAILURE, "color is invalid, it must be given in 3-byte hexadecimal format: rrggbb\n");
 
                 break;
             }
             case 'u':
-                unlock_indicator = false;
+                ui_opts.unlock_indicator = false;
                 break;
             case 'i':
                 image_path = strdup(optarg);
                 break;
             case 't':
-                tile = true;
+                ui_opts.tile = true;
                 break;
             case 'p':
                 if (!strcmp(optarg, "win")) {
@@ -850,7 +856,7 @@ int main(int argc, char *argv[]) {
                     debug_mode = true;
                 break;
             case 'f':
-                show_failed_attempts = true;
+                ui_opts.show_failed_attempts = true;
                 break;
             default:
                 errx(EXIT_FAILURE, "Syntax: i3lock [-v] [-n] [-b] [-d] [-c color] [-u] [-p win|default]"
@@ -960,10 +966,10 @@ int main(int argc, char *argv[]) {
     }
 
     /* Pixmap on which the image is rendered to (if any) */
-    xcb_pixmap_t bg_pixmap = draw_image(last_resolution);
+    xcb_pixmap_t bg_pixmap = draw_image(last_resolution, &status, &ui_opts);
 
     /* open the fullscreen window, already with the correct pixmap in place */
-    win = open_fullscreen_window(conn, screen, color, bg_pixmap);
+    win = open_fullscreen_window(conn, screen, ui_opts.color, bg_pixmap);
     xcb_free_pixmap(conn, bg_pixmap);
 
     pid_t pid = fork();

@@ -32,34 +32,14 @@
 
 extern bool debug_mode;
 
-/* The current position in the input buffer. Useful to determine if any
- * characters of the password have already been entered or not. */
-int input_position;
-
 /* The lock window. */
 extern xcb_window_t win;
 
 /* The current resolution of the X11 root window. */
 extern uint32_t last_resolution[2];
 
-/* Whether the unlock indicator is enabled (defaults to true). */
-extern bool unlock_indicator;
-
-/* List of pressed modifiers, or NULL if none are pressed. */
-extern char *modifier_string;
-
 /* A Cairo surface containing the specified image (-i), if any. */
 extern cairo_surface_t *img;
-
-/* Whether the image should be tiled. */
-extern bool tile;
-/* The background color to use (in hex). */
-extern char color[7];
-
-/* Whether the failed attempts should be displayed. */
-extern bool show_failed_attempts;
-/* Number of failed unlock attempts. */
-extern int failed_attempts;
 
 /*******************************************************************************
  * Variables defined in xcb.c.
@@ -75,10 +55,6 @@ extern xcb_screen_t *screen;
 /* Cache the screen’s visual, necessary for creating a Cairo context. */
 static xcb_visualtype_t *vistype;
 
-/* Maintain the current unlock/PAM state to draw the appropriate unlock
- * indicator. */
-unlock_state_t unlock_state;
-pam_state_t pam_state;
 
 /*
  * Returns the scaling factor of the current screen. E.g., on a 227 DPI MacBook
@@ -91,12 +67,31 @@ static double scaling_factor(void) {
     return (dpi / 96.0);
 }
 
+static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
+
+    size_t index = 0;
+
+    memset(buf, 0x00, len);
+    if (mods->caps) {
+        index += snprintf(&buf[index], len - index, "CAPS ");
+    }
+    if (mods->alt) {
+        index += snprintf(&buf[index], len - index, "ALT ");
+    }
+    if (mods->num) {
+        index += snprintf(&buf[index], len - index, "NUM ");
+    }
+    if (mods->logo) {
+        index += snprintf(&buf[index], len - index, "WIN ");
+    }
+}
+
 /*
  * Draws global image with fill color onto a pixmap with the given
  * resolution and returns it.
  *
  */
-xcb_pixmap_t draw_image(uint32_t *resolution) {
+xcb_pixmap_t draw_image(uint32_t *resolution, const status_t *status, const ui_opts_t *ui_opts) {
     xcb_pixmap_t bg_pixmap = XCB_NONE;
     int button_diameter_physical = ceil(scaling_factor() * BUTTON_DIAMETER);
     DEBUG("scaling_factor is %.f, physical diameter is %d px\n",
@@ -104,7 +99,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
 
     if (!vistype)
         vistype = get_root_visual_type(screen);
-    bg_pixmap = create_bg_pixmap(conn, screen, resolution, color);
+    bg_pixmap = create_bg_pixmap(conn, screen, resolution, (char *)ui_opts->color);
     /* Initialize cairo: Create one in-memory surface to render the unlock
      * indicator on, create one XCB surface to actually draw (one or more,
      * depending on the amount of screens) unlock indicators on. */
@@ -115,7 +110,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
     cairo_t *xcb_ctx = cairo_create(xcb_output);
 
     if (img) {
-        if (!tile) {
+        if (!ui_opts->tile) {
             cairo_set_source_surface(xcb_ctx, img, 0, 0);
             cairo_paint(xcb_ctx);
         } else {
@@ -129,9 +124,9 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
             cairo_pattern_destroy(pattern);
         }
     } else {
-        char strgroups[3][3] = {{color[0], color[1], '\0'},
-                                {color[2], color[3], '\0'},
-                                {color[4], color[5], '\0'}};
+        char strgroups[3][3] = {{ui_opts->color[0], ui_opts->color[1], '\0'},
+                                {ui_opts->color[2], ui_opts->color[3], '\0'},
+                                {ui_opts->color[4], ui_opts->color[5], '\0'}};
         uint32_t rgb16[3] = {(strtol(strgroups[0], NULL, 16)),
                              (strtol(strgroups[1], NULL, 16)),
                              (strtol(strgroups[2], NULL, 16))};
@@ -140,8 +135,8 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
         cairo_fill(xcb_ctx);
     }
 
-    if (unlock_indicator &&
-        (unlock_state >= STATE_KEY_PRESSED || pam_state > STATE_PAM_IDLE)) {
+    if (ui_opts->unlock_indicator &&
+        (status->unlock_state >= STATE_KEY_PRESSED || status->pam_state > STATE_PAM_IDLE)) {
         cairo_scale(ctx, scaling_factor(), scaling_factor());
         /* Draw a (centered) circle with transparent background. */
         cairo_set_line_width(ctx, 10.0);
@@ -154,7 +149,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
 
         /* Use the appropriate color for the different PAM states
          * (currently verifying, wrong password, or default) */
-        switch (pam_state) {
+        switch (status->pam_state) {
             case STATE_PAM_VERIFY:
                 cairo_set_source_rgba(ctx, 0, 114.0 / 255, 255.0 / 255, 0.75);
                 break;
@@ -167,7 +162,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
         }
         cairo_fill_preserve(ctx);
 
-        switch (pam_state) {
+        switch (status->pam_state) {
             case STATE_PAM_VERIFY:
                 cairo_set_source_rgb(ctx, 51.0 / 255, 0, 250.0 / 255);
                 break;
@@ -200,7 +195,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
 
         cairo_set_source_rgb(ctx, 0, 0, 0);
         cairo_set_font_size(ctx, 28.0);
-        switch (pam_state) {
+        switch (status->pam_state) {
             case STATE_PAM_VERIFY:
                 text = "verifying…";
                 break;
@@ -208,11 +203,11 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
                 text = "wrong!";
                 break;
             default:
-                if (show_failed_attempts && failed_attempts > 0) {
-                    if (failed_attempts > 999) {
+                if (ui_opts->show_failed_attempts && status->failed_attempts > 0) {
+                    if (status->failed_attempts > 999) {
                         text = "> 999";
                     } else {
-                        snprintf(buf, sizeof(buf), "%d", failed_attempts);
+                        snprintf(buf, sizeof(buf), "%d", status->failed_attempts);
                         text = buf;
                     }
                     cairo_set_source_rgb(ctx, 1, 0, 0);
@@ -234,12 +229,15 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
             cairo_close_path(ctx);
         }
 
-        if (pam_state == STATE_PAM_WRONG && (modifier_string != NULL)) {
+        if (status->pam_state == STATE_PAM_WRONG && 
+                (status->modifiers.caps || status->modifiers.alt || status->modifiers.num || status->modifiers.logo)) {
             cairo_text_extents_t extents;
             double x, y;
 
             cairo_set_font_size(ctx, 14.0);
 
+            char modifier_string[64];
+            mods_to_string(modifier_string, sizeof(modifier_string), &status->modifiers);
             cairo_text_extents(ctx, modifier_string, &extents);
             x = BUTTON_CENTER - ((extents.width / 2) + extents.x_bearing);
             y = BUTTON_CENTER - ((extents.height / 2) + extents.y_bearing) + 28.0;
@@ -252,8 +250,8 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
         /* After the user pressed any valid key or the backspace key, we
          * highlight a random part of the unlock indicator to confirm this
          * keypress. */
-        if (unlock_state == STATE_KEY_ACTIVE ||
-            unlock_state == STATE_BACKSPACE_ACTIVE) {
+        if (status->unlock_state == STATE_KEY_ACTIVE ||
+            status->unlock_state == STATE_BACKSPACE_ACTIVE) {
             cairo_new_sub_path(ctx);
             double highlight_start = (rand() % (int)(2 * M_PI * 100)) / 100.0;
             cairo_arc(ctx,
@@ -262,7 +260,7 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
                       BUTTON_RADIUS /* radius */,
                       highlight_start,
                       highlight_start + (M_PI / 3.0));
-            if (unlock_state == STATE_KEY_ACTIVE) {
+            if (status->unlock_state == STATE_KEY_ACTIVE) {
                 /* For normal keys, we use a lighter green. */
                 cairo_set_source_rgb(ctx, 51.0 / 255, 219.0 / 255, 0);
             } else {
@@ -322,9 +320,9 @@ xcb_pixmap_t draw_image(uint32_t *resolution) {
  * Calls draw_image on a new pixmap and swaps that with the current pixmap
  *
  */
-void redraw_screen(void) {
-    DEBUG("redraw_screen(unlock_state = %d, pam_state = %d)\n", unlock_state, pam_state);
-    xcb_pixmap_t bg_pixmap = draw_image(last_resolution);
+void redraw_screen(const status_t *status, const ui_opts_t *ui_opts) {
+    DEBUG("redraw_screen(unlock_state = %d, pam_state = %d)\n", status->unlock_state, status->pam_state);
+    xcb_pixmap_t bg_pixmap = draw_image(last_resolution, status, ui_opts);
     xcb_change_window_attributes(conn, win, XCB_CW_BACK_PIXMAP, (uint32_t[1]){bg_pixmap});
     /* XXX: Possible optimization: Only update the area in the middle of the
      * screen instead of the whole screen. */
@@ -333,15 +331,3 @@ void redraw_screen(void) {
     xcb_flush(conn);
 }
 
-/*
- * Hides the unlock indicator completely when there is no content in the
- * password buffer.
- *
- */
-void clear_indicator(void) {
-    if (input_position == 0) {
-        unlock_state = STATE_STARTED;
-    } else
-        unlock_state = STATE_KEY_PRESSED;
-    redraw_screen();
-}
