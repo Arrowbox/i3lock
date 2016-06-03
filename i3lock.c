@@ -8,7 +8,6 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
-#include <pwd.h>
 #include <sys/types.h>
 #include <string.h>
 #include <unistd.h>
@@ -18,11 +17,9 @@
 #include <xcb/xkb.h>
 #include <err.h>
 #include <assert.h>
-#include <security/pam_appl.h>
 #include <getopt.h>
 #include <string.h>
 #include <ev.h>
-#include <sys/mman.h>
 #include <xkbcommon/xkbcommon.h>
 #include <xkbcommon/xkbcommon-compose.h>
 #include <xkbcommon/xkbcommon-x11.h>
@@ -34,6 +31,7 @@
 #include "cursors.h"
 #include "unlock_indicator.h"
 #include "xinerama.h"
+#include "pam.h"
 
 #define TSTAMP_N_SECS(n) (n * 1.0)
 #define TSTAMP_N_MINS(n) (60 * TSTAMP_N_SECS(n))
@@ -87,12 +85,10 @@ static status_t status = {
     .failed_attempts = 0,
 };
 
+static pam_ctx_t *pam_ctx;
+
 xcb_window_t win;
 static xcb_cursor_t cursor;
-static pam_handle_t *pam_handle;
-int input_position = 0;
-/* Holds the password you enter (in UTF-8). */
-static char password[512];
 bool debug_mode = false;
 struct ev_loop *main_loop;
 static struct ev_timer *clear_pam_wrong_timeout;
@@ -111,16 +107,6 @@ static uint8_t xkb_base_error;
 cairo_surface_t *img = NULL;
 bool skip_repeated_empty_password = false;
 
-/* isutf, u8_dec © 2005 Jeff Bezanson, public domain */
-#define isutf(c) (((c)&0xC0) != 0x80)
-
-/*
- * Decrements i to point to the previous unicode glyph
- *
- */
-void u8_dec(char *s, int *i) {
-    (void)(isutf(s[--(*i)]) || isutf(s[--(*i)]) || isutf(s[--(*i)]) || --(*i));
-}
 
 /*
  * Loads the XKB keymap from the X11 server and feeds it to xkbcommon.
@@ -182,22 +168,6 @@ static bool load_compose_table(const char *locale) {
     return true;
 }
 
-/*
- * Clears the memory which stored the password to be a bit safer against
- * cold-boot attacks.
- *
- */
-static void clear_password_memory(void) {
-    /* A volatile pointer to the password buffer to prevent the compiler from
-     * optimizing this out. */
-    volatile char *vpassword = password;
-    for (int c = 0; c < sizeof(password); c++)
-        /* We store a non-random pattern which consists of the (irrelevant)
-         * index plus (!) the value of the beep variable. This prevents the
-         * compiler from optimizing the calls away, since the value of 'beep'
-         * is not known at compile-time. */
-        vpassword[c] = c + (int)lock_opts.beep;
-}
 
 ev_timer *start_timer(ev_timer *timer_obj, ev_tstamp timeout, ev_callback_t callback) {
     if (timer_obj) {
@@ -239,7 +209,7 @@ static void clear_pam_wrong(EV_P_ ev_timer *w, int revents) {
 }
 
 static void clear_indicator_cb(EV_P_ ev_timer *w, int revents) {
-    if (input_position == 0) {
+    if (pam_password_is_empty(pam_ctx)) {
         status.unlock_state = STATE_STARTED;
     } else {
         status.unlock_state = STATE_KEY_PRESSED;
@@ -249,14 +219,8 @@ static void clear_indicator_cb(EV_P_ ev_timer *w, int revents) {
     STOP_TIMER(clear_indicator_timeout);
 }
 
-static void clear_input(void) {
-    input_position = 0;
-    clear_password_memory();
-    password[input_position] = '\0';
-}
-
 static void discard_passwd_cb(EV_P_ ev_timer *w, int revents) {
-    clear_input();
+    pam_clear_password(pam_ctx);
     STOP_TIMER(discard_passwd_timeout);
 }
 
@@ -266,17 +230,7 @@ static void input_done(void) {
     status.unlock_state = STATE_STARTED;
     redraw_screen(&status, &ui_opts);
 
-    if (pam_authenticate(pam_handle, 0) == PAM_SUCCESS) {
-        DEBUG("successfully authenticated\n");
-        clear_password_memory();
-
-        /* PAM credentials should be refreshed, this will for example update any kerberos tickets.
-         * Related to credentials pam_end() needs to be called to cleanup any temporary
-         * credentials like kerberos /tmp/krb5cc_pam_* files which may of been left behind if the
-         * refresh of the credentials failed. */
-        pam_setcred(pam_handle, PAM_REFRESH_CRED);
-        pam_end(pam_handle, PAM_SUCCESS);
-
+    if (pam_check_password(pam_ctx)) {
         exit(0);
     }
 
@@ -315,7 +269,7 @@ static void input_done(void) {
 
     status.pam_state = STATE_PAM_WRONG;
     status.failed_attempts += 1;
-    clear_input();
+    pam_clear_password(pam_ctx);
     if (ui_opts.unlock_indicator)
         redraw_screen(&status, &ui_opts);
 
@@ -341,7 +295,7 @@ static void redraw_timeout(EV_P_ ev_timer *w, int revents) {
 }
 
 static bool skip_without_validation(void) {
-    if (input_position != 0)
+    if (!pam_password_is_empty(pam_ctx))
         return false;
 
     if (skip_repeated_empty_password || lock_opts.ignore_empty_password)
@@ -404,10 +358,9 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 return;
 
             if (skip_without_validation()) {
-                clear_input();
+                pam_clear_password(pam_ctx);
                 return;
             }
-            password[input_position] = '\0';
             status.unlock_state = STATE_KEY_PRESSED;
             redraw_screen(&status, &ui_opts);
             input_done();
@@ -423,7 +376,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
             if ((ksym == XKB_KEY_u && ctrl) ||
                 ksym == XKB_KEY_Escape) {
                 DEBUG("C-u pressed\n");
-                clear_input();
+                pam_clear_password(pam_ctx);
                 /* Hide the unlock indicator after a bit if the password buffer is
                  * empty. */
                 if (ui_opts.unlock_indicator) {
@@ -449,12 +402,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
             if (ksym == XKB_KEY_h && !ctrl)
                 break;
 
-            if (input_position == 0)
-                return;
-
-            /* decrement input_position to point to the previous glyph */
-            u8_dec(password, &input_position);
-            password[input_position] = '\0';
+            pam_utf8_dec_password(pam_ctx);
 
             /* Hide the unlock indicator after a bit if the password buffer is
              * empty. */
@@ -464,9 +412,6 @@ static void handle_key_press(xcb_key_press_event_t *event) {
             status.unlock_state = STATE_KEY_PRESSED;
             return;
     }
-
-    if ((input_position + 8) >= sizeof(password))
-        return;
 
 #if 0
     /* FIXME: handle all of these? */
@@ -479,13 +424,11 @@ static void handle_key_press(xcb_key_press_event_t *event) {
     printf("xcb_is_modifier_key = %d\n", xcb_is_modifier_key(sym));
 #endif
 
-    if (n < 2)
-        return;
 
-    /* store it in the password array as UTF-8 */
-    memcpy(password + input_position, buffer, n - 1);
-    input_position += n - 1;
-    DEBUG("current password = %.*s\n", input_position, password);
+    if (!pam_utf8_inc_password(pam_ctx, buffer, n)) {
+        return;
+    }
+
 
     if (ui_opts.unlock_indicator) {
         status.unlock_state = STATE_KEY_ACTIVE;
@@ -605,36 +548,6 @@ void handle_screen_resize(void) {
     redraw_screen(&status, &ui_opts);
 }
 
-/*
- * Callback function for PAM. We only react on password request callbacks.
- *
- */
-static int conv_callback(int num_msg, const struct pam_message **msg,
-                         struct pam_response **resp, void *appdata_ptr) {
-    if (num_msg == 0)
-        return 1;
-
-    /* PAM expects an array of responses, one for each message */
-    if ((*resp = calloc(num_msg, sizeof(struct pam_response))) == NULL) {
-        perror("calloc");
-        return 1;
-    }
-
-    for (int c = 0; c < num_msg; c++) {
-        if (msg[c]->msg_style != PAM_PROMPT_ECHO_OFF &&
-            msg[c]->msg_style != PAM_PROMPT_ECHO_ON)
-            continue;
-
-        /* return code is currently not used but should be set to zero */
-        resp[c]->resp_retcode = 0;
-        if ((resp[c]->resp = strdup(password)) == NULL) {
-            perror("strdup");
-            return 1;
-        }
-    }
-
-    return 0;
-}
 
 /*
  * This callback is only a dummy, see xcb_prepare_cb and xcb_check_cb.
@@ -877,39 +790,16 @@ static void parse_args(int argc, char *argv[], ui_opts_t *ui_opts, lock_opts_t *
 
 
 int main(int argc, char *argv[]) {
-    struct passwd *pw;
-    char *username;
-    int ret;
-    struct pam_conv conv = {conv_callback, NULL};
-
-    if ((pw = getpwuid(getuid())) == NULL)
-        err(EXIT_FAILURE, "getpwuid() failed");
-    if ((username = pw->pw_name) == NULL)
-        errx(EXIT_FAILURE, "pw->pw_name is NULL.\n");
+    pam_ctx = pam_initialize();
 
     parse_args(argc, argv, &ui_opts, &lock_opts);
+
 
     /* We need (relatively) random numbers for highlighting a random part of
      * the unlock indicator upon keypresses. */
     srand(time(NULL));
 
-    /* Initialize PAM */
-    if ((ret = pam_start("i3lock", username, &conv, &pam_handle)) != PAM_SUCCESS)
-        errx(EXIT_FAILURE, "PAM: %s", pam_strerror(pam_handle, ret));
 
-    if ((ret = pam_set_item(pam_handle, PAM_TTY, getenv("DISPLAY"))) != PAM_SUCCESS)
-        errx(EXIT_FAILURE, "PAM: %s", pam_strerror(pam_handle, ret));
-
-/* Using mlock() as non-super-user seems only possible in Linux. Users of other
- * operating systems should use encrypted swap/no swap (or remove the ifdef and
- * run i3lock as super-user). */
-#if defined(__linux__)
-    /* Lock the area where we store the password in memory, we don’t want it to
-     * be swapped to disk. Since Linux 2.6.9, this does not require any
-     * privileges, just enough bytes in the RLIMIT_MEMLOCK limit. */
-    if (mlock(password, sizeof(password)) != 0)
-        err(EXIT_FAILURE, "Could not lock page in memory, check RLIMIT_MEMLOCK");
-#endif
 
     /* Double checking that connection is good and operatable with xcb */
     int screennr;
