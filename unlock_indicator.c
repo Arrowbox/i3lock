@@ -83,6 +83,223 @@ static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
     }
 }
 
+
+void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const status_t *status) {
+
+    cairo_t *ctx = cairo_create(canvas);
+
+    cairo_scale(ctx, scaling_factor(), scaling_factor());
+    /* Draw a (centered) circle with transparent background. */
+    cairo_set_line_width(ctx, 10.0);
+    cairo_arc(ctx,
+              BUTTON_CENTER /* x */,
+              BUTTON_CENTER /* y */,
+              BUTTON_RADIUS /* radius */,
+              0 /* start */,
+              2 * M_PI /* end */);
+
+    /* Use the appropriate color for the different PAM states
+     * (currently verifying, wrong password, or default) */
+    switch (status->pam_state) {
+        case STATE_PAM_VERIFY:
+            cairo_set_source_rgba(ctx, 0, 114.0 / 255, 255.0 / 255, 0.75);
+            break;
+        case STATE_PAM_WRONG:
+            cairo_set_source_rgba(ctx, 250.0 / 255, 0, 0, 0.75);
+            break;
+        default:
+            cairo_set_source_rgba(ctx, 0, 0, 0, 0.75);
+            break;
+    }
+    cairo_fill_preserve(ctx);
+
+    switch (status->pam_state) {
+        case STATE_PAM_VERIFY:
+            cairo_set_source_rgb(ctx, 51.0 / 255, 0, 250.0 / 255);
+            break;
+        case STATE_PAM_WRONG:
+            cairo_set_source_rgb(ctx, 125.0 / 255, 51.0 / 255, 0);
+            break;
+        case STATE_PAM_IDLE:
+            cairo_set_source_rgb(ctx, 51.0 / 255, 125.0 / 255, 0);
+            break;
+    }
+    cairo_stroke(ctx);
+
+    /* Draw an inner seperator line. */
+    cairo_set_source_rgb(ctx, 0, 0, 0);
+    cairo_set_line_width(ctx, 2.0);
+    cairo_arc(ctx,
+              BUTTON_CENTER /* x */,
+              BUTTON_CENTER /* y */,
+              BUTTON_RADIUS - 5 /* radius */,
+              0,
+              2 * M_PI);
+    cairo_stroke(ctx);
+
+    cairo_set_line_width(ctx, 10.0);
+
+    /* Display a (centered) text of the current PAM state. */
+    char *text = NULL;
+    /* We don't want to show more than a 3-digit number. */
+    char buf[4];
+
+    cairo_set_source_rgb(ctx, 0, 0, 0);
+    cairo_set_font_size(ctx, 28.0);
+    switch (status->pam_state) {
+        case STATE_PAM_VERIFY:
+            text = "verifying…";
+            break;
+        case STATE_PAM_WRONG:
+            text = "wrong!";
+            break;
+        default:
+            if (ui_opts->show_failed_attempts && status->failed_attempts > 0) {
+                if (status->failed_attempts > 999) {
+                    text = "> 999";
+                } else {
+                    snprintf(buf, sizeof(buf), "%d", status->failed_attempts);
+                    text = buf;
+                }
+                cairo_set_source_rgb(ctx, 1, 0, 0);
+                cairo_set_font_size(ctx, 32.0);
+            }
+            break;
+    }
+
+    if (text) {
+        cairo_text_extents_t extents;
+        double x, y;
+
+        cairo_text_extents(ctx, text, &extents);
+        x = BUTTON_CENTER - ((extents.width / 2) + extents.x_bearing);
+        y = BUTTON_CENTER - ((extents.height / 2) + extents.y_bearing);
+
+        cairo_move_to(ctx, x, y);
+        cairo_show_text(ctx, text);
+        cairo_close_path(ctx);
+    }
+
+    if (status->pam_state == STATE_PAM_WRONG && 
+            (status->modifiers.caps || status->modifiers.alt || status->modifiers.num || status->modifiers.logo)) {
+        cairo_text_extents_t extents;
+        double x, y;
+
+        cairo_set_font_size(ctx, 14.0);
+
+        char modifier_string[64];
+        mods_to_string(modifier_string, sizeof(modifier_string), &status->modifiers);
+        cairo_text_extents(ctx, modifier_string, &extents);
+        x = BUTTON_CENTER - ((extents.width / 2) + extents.x_bearing);
+        y = BUTTON_CENTER - ((extents.height / 2) + extents.y_bearing) + 28.0;
+
+        cairo_move_to(ctx, x, y);
+        cairo_show_text(ctx, modifier_string);
+        cairo_close_path(ctx);
+    }
+
+    /* After the user pressed any valid key or the backspace key, we
+     * highlight a random part of the unlock indicator to confirm this
+     * keypress. */
+    if (status->unlock_state == STATE_KEY_ACTIVE ||
+        status->unlock_state == STATE_BACKSPACE_ACTIVE) {
+        cairo_new_sub_path(ctx);
+        double highlight_start = (rand() % (int)(2 * M_PI * 100)) / 100.0;
+        cairo_arc(ctx,
+                  BUTTON_CENTER /* x */,
+                  BUTTON_CENTER /* y */,
+                  BUTTON_RADIUS /* radius */,
+                  highlight_start,
+                  highlight_start + (M_PI / 3.0));
+        if (status->unlock_state == STATE_KEY_ACTIVE) {
+            /* For normal keys, we use a lighter green. */
+            cairo_set_source_rgb(ctx, 51.0 / 255, 219.0 / 255, 0);
+        } else {
+            /* For backspace, we use red. */
+            cairo_set_source_rgb(ctx, 219.0 / 255, 51.0 / 255, 0);
+        }
+        cairo_stroke(ctx);
+
+        /* Draw two little separators for the highlighted part of the
+         * unlock indicator. */
+        cairo_set_source_rgb(ctx, 0, 0, 0);
+        cairo_arc(ctx,
+                  BUTTON_CENTER /* x */,
+                  BUTTON_CENTER /* y */,
+                  BUTTON_RADIUS /* radius */,
+                  highlight_start /* start */,
+                  highlight_start + (M_PI / 128.0) /* end */);
+        cairo_stroke(ctx);
+        cairo_arc(ctx,
+                  BUTTON_CENTER /* x */,
+                  BUTTON_CENTER /* y */,
+                  BUTTON_RADIUS /* radius */,
+                  highlight_start + (M_PI / 3.0) /* start */,
+                  (highlight_start + (M_PI / 3.0)) + (M_PI / 128.0) /* end */);
+        cairo_stroke(ctx);
+    }
+    cairo_destroy(ctx);
+}
+
+void ui_draw_background(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const status_t *status) {
+    cairo_t *ctx = cairo_create(canvas);
+    if (img) {
+        if (!ui_opts->tile) {
+            cairo_set_source_surface(ctx, img, 0, 0);
+            cairo_paint(ctx);
+        } else {
+            /* create a pattern and fill a rectangle as big as the screen */
+            cairo_pattern_t *pattern;
+            pattern = cairo_pattern_create_for_surface(img);
+            cairo_set_source(ctx, pattern);
+            cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
+            cairo_rectangle(ctx, 0, 0, status->resolution[0], status->resolution[1]);
+            cairo_fill(ctx);
+            cairo_pattern_destroy(pattern);
+        }
+    } else {
+        char strgroups[3][3] = {{ui_opts->color[0], ui_opts->color[1], '\0'},
+                                {ui_opts->color[2], ui_opts->color[3], '\0'},
+                                {ui_opts->color[4], ui_opts->color[5], '\0'}};
+        uint32_t rgb16[3] = {(strtol(strgroups[0], NULL, 16)),
+                             (strtol(strgroups[1], NULL, 16)),
+                             (strtol(strgroups[2], NULL, 16))};
+        cairo_set_source_rgb(ctx, rgb16[0] / 255.0, rgb16[1] / 255.0, rgb16[2] / 255.0);
+        cairo_rectangle(ctx, 0, 0, status->resolution[0], status->resolution[1]);
+        cairo_fill(ctx);
+    }
+    cairo_destroy(ctx);
+
+}
+
+void ui_compose(cairo_surface_t *canvas, cairo_surface_t *background, cairo_surface_t *button, const ui_opts_t *ui_opts, const status_t *status) {
+    int button_diameter_physical = ceil(scaling_factor() * BUTTON_DIAMETER);
+    cairo_t *ctx = cairo_create(canvas);
+    cairo_set_source_surface(ctx, background, 0, 0);
+    cairo_paint(ctx);
+
+    if (xr_screens > 0) {
+        /* Composite the unlock indicator in the middle of each screen. */
+        for (int screen = 0; screen < xr_screens; screen++) {
+            int x = (xr_resolutions[screen].x + ((xr_resolutions[screen].width / 2) - (button_diameter_physical / 2)));
+            int y = (xr_resolutions[screen].y + ((xr_resolutions[screen].height / 2) - (button_diameter_physical / 2)));
+            cairo_set_source_surface(ctx, button, x, y);
+            cairo_rectangle(ctx, x, y, button_diameter_physical, button_diameter_physical);
+            cairo_fill(ctx);
+        }
+    } else {
+        /* We have no information about the screen sizes/positions, so we just
+         * place the unlock indicator in the middle of the X root window and
+         * hope for the best. */
+        int x = (status->resolution[0] / 2) - (button_diameter_physical / 2);
+        int y = (status->resolution[1] / 2) - (button_diameter_physical / 2);
+        cairo_set_source_surface(ctx, button, x, y);
+        cairo_rectangle(ctx, x, y, button_diameter_physical, button_diameter_physical);
+        cairo_fill(ctx);
+    }
+    cairo_destroy(ctx);
+}
+
 /*
  * Draws global image with fill color onto a pixmap with the given
  * resolution and returns it.
@@ -100,216 +317,26 @@ xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts) {
     /* Initialize cairo: Create one in-memory surface to render the unlock
      * indicator on, create one XCB surface to actually draw (one or more,
      * depending on the amount of screens) unlock indicators on. */
-    cairo_surface_t *output = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, button_diameter_physical, button_diameter_physical);
-    cairo_t *ctx = cairo_create(output);
+    cairo_surface_t *button = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, button_diameter_physical, button_diameter_physical);
+
+    cairo_surface_t *background = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, status->resolution[0], status->resolution[1]);
+
+    ui_draw_background(background, ui_opts, status);
 
     cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, vistype, status->resolution[0], status->resolution[1]);
-    cairo_t *xcb_ctx = cairo_create(xcb_output);
 
-    if (img) {
-        if (!ui_opts->tile) {
-            cairo_set_source_surface(xcb_ctx, img, 0, 0);
-            cairo_paint(xcb_ctx);
-        } else {
-            /* create a pattern and fill a rectangle as big as the screen */
-            cairo_pattern_t *pattern;
-            pattern = cairo_pattern_create_for_surface(img);
-            cairo_set_source(xcb_ctx, pattern);
-            cairo_pattern_set_extend(pattern, CAIRO_EXTEND_REPEAT);
-            cairo_rectangle(xcb_ctx, 0, 0, status->resolution[0], status->resolution[1]);
-            cairo_fill(xcb_ctx);
-            cairo_pattern_destroy(pattern);
-        }
-    } else {
-        char strgroups[3][3] = {{ui_opts->color[0], ui_opts->color[1], '\0'},
-                                {ui_opts->color[2], ui_opts->color[3], '\0'},
-                                {ui_opts->color[4], ui_opts->color[5], '\0'}};
-        uint32_t rgb16[3] = {(strtol(strgroups[0], NULL, 16)),
-                             (strtol(strgroups[1], NULL, 16)),
-                             (strtol(strgroups[2], NULL, 16))};
-        cairo_set_source_rgb(xcb_ctx, rgb16[0] / 255.0, rgb16[1] / 255.0, rgb16[2] / 255.0);
-        cairo_rectangle(xcb_ctx, 0, 0, status->resolution[0], status->resolution[1]);
-        cairo_fill(xcb_ctx);
-    }
 
     if (ui_opts->unlock_indicator &&
         (status->unlock_state >= STATE_KEY_PRESSED || status->pam_state > STATE_PAM_IDLE)) {
-        cairo_scale(ctx, scaling_factor(), scaling_factor());
-        /* Draw a (centered) circle with transparent background. */
-        cairo_set_line_width(ctx, 10.0);
-        cairo_arc(ctx,
-                  BUTTON_CENTER /* x */,
-                  BUTTON_CENTER /* y */,
-                  BUTTON_RADIUS /* radius */,
-                  0 /* start */,
-                  2 * M_PI /* end */);
-
-        /* Use the appropriate color for the different PAM states
-         * (currently verifying, wrong password, or default) */
-        switch (status->pam_state) {
-            case STATE_PAM_VERIFY:
-                cairo_set_source_rgba(ctx, 0, 114.0 / 255, 255.0 / 255, 0.75);
-                break;
-            case STATE_PAM_WRONG:
-                cairo_set_source_rgba(ctx, 250.0 / 255, 0, 0, 0.75);
-                break;
-            default:
-                cairo_set_source_rgba(ctx, 0, 0, 0, 0.75);
-                break;
-        }
-        cairo_fill_preserve(ctx);
-
-        switch (status->pam_state) {
-            case STATE_PAM_VERIFY:
-                cairo_set_source_rgb(ctx, 51.0 / 255, 0, 250.0 / 255);
-                break;
-            case STATE_PAM_WRONG:
-                cairo_set_source_rgb(ctx, 125.0 / 255, 51.0 / 255, 0);
-                break;
-            case STATE_PAM_IDLE:
-                cairo_set_source_rgb(ctx, 51.0 / 255, 125.0 / 255, 0);
-                break;
-        }
-        cairo_stroke(ctx);
-
-        /* Draw an inner seperator line. */
-        cairo_set_source_rgb(ctx, 0, 0, 0);
-        cairo_set_line_width(ctx, 2.0);
-        cairo_arc(ctx,
-                  BUTTON_CENTER /* x */,
-                  BUTTON_CENTER /* y */,
-                  BUTTON_RADIUS - 5 /* radius */,
-                  0,
-                  2 * M_PI);
-        cairo_stroke(ctx);
-
-        cairo_set_line_width(ctx, 10.0);
-
-        /* Display a (centered) text of the current PAM state. */
-        char *text = NULL;
-        /* We don't want to show more than a 3-digit number. */
-        char buf[4];
-
-        cairo_set_source_rgb(ctx, 0, 0, 0);
-        cairo_set_font_size(ctx, 28.0);
-        switch (status->pam_state) {
-            case STATE_PAM_VERIFY:
-                text = "verifying…";
-                break;
-            case STATE_PAM_WRONG:
-                text = "wrong!";
-                break;
-            default:
-                if (ui_opts->show_failed_attempts && status->failed_attempts > 0) {
-                    if (status->failed_attempts > 999) {
-                        text = "> 999";
-                    } else {
-                        snprintf(buf, sizeof(buf), "%d", status->failed_attempts);
-                        text = buf;
-                    }
-                    cairo_set_source_rgb(ctx, 1, 0, 0);
-                    cairo_set_font_size(ctx, 32.0);
-                }
-                break;
-        }
-
-        if (text) {
-            cairo_text_extents_t extents;
-            double x, y;
-
-            cairo_text_extents(ctx, text, &extents);
-            x = BUTTON_CENTER - ((extents.width / 2) + extents.x_bearing);
-            y = BUTTON_CENTER - ((extents.height / 2) + extents.y_bearing);
-
-            cairo_move_to(ctx, x, y);
-            cairo_show_text(ctx, text);
-            cairo_close_path(ctx);
-        }
-
-        if (status->pam_state == STATE_PAM_WRONG && 
-                (status->modifiers.caps || status->modifiers.alt || status->modifiers.num || status->modifiers.logo)) {
-            cairo_text_extents_t extents;
-            double x, y;
-
-            cairo_set_font_size(ctx, 14.0);
-
-            char modifier_string[64];
-            mods_to_string(modifier_string, sizeof(modifier_string), &status->modifiers);
-            cairo_text_extents(ctx, modifier_string, &extents);
-            x = BUTTON_CENTER - ((extents.width / 2) + extents.x_bearing);
-            y = BUTTON_CENTER - ((extents.height / 2) + extents.y_bearing) + 28.0;
-
-            cairo_move_to(ctx, x, y);
-            cairo_show_text(ctx, modifier_string);
-            cairo_close_path(ctx);
-        }
-
-        /* After the user pressed any valid key or the backspace key, we
-         * highlight a random part of the unlock indicator to confirm this
-         * keypress. */
-        if (status->unlock_state == STATE_KEY_ACTIVE ||
-            status->unlock_state == STATE_BACKSPACE_ACTIVE) {
-            cairo_new_sub_path(ctx);
-            double highlight_start = (rand() % (int)(2 * M_PI * 100)) / 100.0;
-            cairo_arc(ctx,
-                      BUTTON_CENTER /* x */,
-                      BUTTON_CENTER /* y */,
-                      BUTTON_RADIUS /* radius */,
-                      highlight_start,
-                      highlight_start + (M_PI / 3.0));
-            if (status->unlock_state == STATE_KEY_ACTIVE) {
-                /* For normal keys, we use a lighter green. */
-                cairo_set_source_rgb(ctx, 51.0 / 255, 219.0 / 255, 0);
-            } else {
-                /* For backspace, we use red. */
-                cairo_set_source_rgb(ctx, 219.0 / 255, 51.0 / 255, 0);
-            }
-            cairo_stroke(ctx);
-
-            /* Draw two little separators for the highlighted part of the
-             * unlock indicator. */
-            cairo_set_source_rgb(ctx, 0, 0, 0);
-            cairo_arc(ctx,
-                      BUTTON_CENTER /* x */,
-                      BUTTON_CENTER /* y */,
-                      BUTTON_RADIUS /* radius */,
-                      highlight_start /* start */,
-                      highlight_start + (M_PI / 128.0) /* end */);
-            cairo_stroke(ctx);
-            cairo_arc(ctx,
-                      BUTTON_CENTER /* x */,
-                      BUTTON_CENTER /* y */,
-                      BUTTON_RADIUS /* radius */,
-                      highlight_start + (M_PI / 3.0) /* start */,
-                      (highlight_start + (M_PI / 3.0)) + (M_PI / 128.0) /* end */);
-            cairo_stroke(ctx);
-        }
+        ui_draw_button(button, ui_opts, status);
     }
 
-    if (xr_screens > 0) {
-        /* Composite the unlock indicator in the middle of each screen. */
-        for (int screen = 0; screen < xr_screens; screen++) {
-            int x = (xr_resolutions[screen].x + ((xr_resolutions[screen].width / 2) - (button_diameter_physical / 2)));
-            int y = (xr_resolutions[screen].y + ((xr_resolutions[screen].height / 2) - (button_diameter_physical / 2)));
-            cairo_set_source_surface(xcb_ctx, output, x, y);
-            cairo_rectangle(xcb_ctx, x, y, button_diameter_physical, button_diameter_physical);
-            cairo_fill(xcb_ctx);
-        }
-    } else {
-        /* We have no information about the screen sizes/positions, so we just
-         * place the unlock indicator in the middle of the X root window and
-         * hope for the best. */
-        int x = (status->resolution[0] / 2) - (button_diameter_physical / 2);
-        int y = (status->resolution[1] / 2) - (button_diameter_physical / 2);
-        cairo_set_source_surface(xcb_ctx, output, x, y);
-        cairo_rectangle(xcb_ctx, x, y, button_diameter_physical, button_diameter_physical);
-        cairo_fill(xcb_ctx);
-    }
+
+    ui_compose(xcb_output, background, button, ui_opts, status);
 
     cairo_surface_destroy(xcb_output);
-    cairo_surface_destroy(output);
-    cairo_destroy(ctx);
-    cairo_destroy(xcb_ctx);
+    cairo_surface_destroy(button);
+    cairo_surface_destroy(background);
     return bg_pixmap;
 }
 
