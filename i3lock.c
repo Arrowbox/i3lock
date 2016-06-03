@@ -42,22 +42,38 @@
 #define STOP_TIMER(timer_obj) \
     timer_obj = stop_timer(timer_obj)
 
+/***************************************
+ * structs
+ * ************************************/
+typedef struct lock_opts {
+    bool fork;
+    bool beep;
+    int inactivity_timeout;
+    int cursor;
+    bool ignore_empty_password;
+} lock_opts_t;
+
 typedef void (*ev_callback_t)(EV_P_ ev_timer *w, int revents);
 
-int inactivity_timeout = 30;
-xcb_window_t win;
-static xcb_cursor_t cursor;
-static pam_handle_t *pam_handle;
-int input_position = 0;
-/* Holds the password you enter (in UTF-8). */
-static char password[512];
-static bool beep = false;
-bool debug_mode = false;
-static bool dont_fork = false;
-struct ev_loop *main_loop;
-static struct ev_timer *clear_pam_wrong_timeout;
-static struct ev_timer *clear_indicator_timeout;
-static struct ev_timer *discard_passwd_timeout;
+/**************************************
+ * static variables
+ **************************************/
+
+static lock_opts_t lock_opts = {
+    .fork = true,
+    .beep = false,
+    .inactivity_timeout = 30,
+    .cursor = CURS_NONE,
+    .ignore_empty_password = false,
+};
+
+static ui_opts_t ui_opts = {
+    .show_failed_attempts = false,
+    .unlock_indicator = true,
+    .color = "ffffff",
+    .tile = false,
+    .image_path = NULL,
+};
 
 static status_t status = {
     .pam_state = STATE_PAM_IDLE,
@@ -71,12 +87,18 @@ static status_t status = {
     .failed_attempts = 0,
 };
 
-static ui_opts_t ui_opts = {
-    .show_failed_attempts = false,
-    .unlock_indicator = true,
-    .color = "ffffff",
-    .tile = false,
-};
+xcb_window_t win;
+static xcb_cursor_t cursor;
+static pam_handle_t *pam_handle;
+int input_position = 0;
+/* Holds the password you enter (in UTF-8). */
+static char password[512];
+bool debug_mode = false;
+struct ev_loop *main_loop;
+static struct ev_timer *clear_pam_wrong_timeout;
+static struct ev_timer *clear_indicator_timeout;
+static struct ev_timer *discard_passwd_timeout;
+
 
 static struct xkb_state *xkb_state;
 static struct xkb_context *xkb_context;
@@ -87,7 +109,6 @@ static uint8_t xkb_base_event;
 static uint8_t xkb_base_error;
 
 cairo_surface_t *img = NULL;
-bool ignore_empty_password = false;
 bool skip_repeated_empty_password = false;
 
 /* isutf, u8_dec © 2005 Jeff Bezanson, public domain */
@@ -175,7 +196,7 @@ static void clear_password_memory(void) {
          * index plus (!) the value of the beep variable. This prevents the
          * compiler from optimizing the calls away, since the value of 'beep'
          * is not known at compile-time. */
-        vpassword[c] = c + (int)beep;
+        vpassword[c] = c + (int)lock_opts.beep;
 }
 
 ev_timer *start_timer(ev_timer *timer_obj, ev_tstamp timeout, ev_callback_t callback) {
@@ -308,7 +329,7 @@ static void input_done(void) {
     STOP_TIMER(clear_indicator_timeout);
 
     /* beep on authentication failure, if enabled */
-    if (beep) {
+    if (lock_opts.beep) {
         xcb_bell(conn, 100);
         xcb_flush(conn);
     }
@@ -323,7 +344,7 @@ static bool skip_without_validation(void) {
     if (input_position != 0)
         return false;
 
-    if (skip_repeated_empty_password || ignore_empty_password)
+    if (skip_repeated_empty_password || lock_opts.ignore_empty_password)
         return true;
 
     return false;
@@ -683,10 +704,10 @@ static void xcb_check_cb(EV_P_ ev_check *w, int revents) {
 
             case XCB_MAP_NOTIFY:
                 maybe_close_sleep_lock_fd();
-                if (!dont_fork) {
+                if (lock_opts.fork) {
                     /* After the first MapNotify, we never fork again. We don’t
                      * expect to get another MapNotify, but better be sure… */
-                    dont_fork = true;
+                    lock_opts.fork = false;
 
                     /* In the parent process, we exit */
                     if (fork() != 0)
@@ -765,13 +786,7 @@ static void raise_loop(xcb_window_t window) {
     }
 }
 
-int main(int argc, char *argv[]) {
-    struct passwd *pw;
-    char *username;
-    char *image_path = NULL;
-    int ret;
-    struct pam_conv conv = {conv_callback, NULL};
-    int curs_choice = CURS_NONE;
+static void parse_args(int argc, char *argv[], ui_opts_t *ui_opts, lock_opts_t *lock_opts) {
     int o;
     int optind = 0;
     struct option longopts[] = {
@@ -791,21 +806,16 @@ int main(int argc, char *argv[]) {
         {"show-failed-attempts", no_argument, NULL, 'f'},
         {NULL, no_argument, NULL, 0}};
 
-    if ((pw = getpwuid(getuid())) == NULL)
-        err(EXIT_FAILURE, "getpwuid() failed");
-    if ((username = pw->pw_name) == NULL)
-        errx(EXIT_FAILURE, "pw->pw_name is NULL.\n");
-
     char *optstring = "hvnbdc:p:ui:teI:f";
     while ((o = getopt_long(argc, argv, optstring, longopts, &optind)) != -1) {
         switch (o) {
             case 'v':
                 errx(EXIT_SUCCESS, "version " VERSION " © 2010 Michael Stapelberg");
             case 'n':
-                dont_fork = true;
+                lock_opts->fork = false;
                 break;
             case 'b':
-                beep = true;
+                lock_opts->beep = true;
                 break;
             case 'd':
                 fprintf(stderr, "DPMS support has been removed from i3lock. Please see the manpage i3lock(1).\n");
@@ -814,7 +824,7 @@ int main(int argc, char *argv[]) {
                 int time = 0;
                 if (sscanf(optarg, "%d", &time) != 1 || time < 0)
                     errx(EXIT_FAILURE, "invalid timeout, it must be a positive integer\n");
-                inactivity_timeout = time;
+                lock_opts->inactivity_timeout = time;
                 break;
             }
             case 'c': {
@@ -824,44 +834,60 @@ int main(int argc, char *argv[]) {
                 if (arg[0] == '#')
                     arg++;
 
-                if (strlen(arg) != 6 || sscanf(arg, "%06[0-9a-fA-F]", ui_opts.color) != 1)
+                if (strlen(arg) != 6 || sscanf(arg, "%06[0-9a-fA-F]", ui_opts->color) != 1)
                     errx(EXIT_FAILURE, "color is invalid, it must be given in 3-byte hexadecimal format: rrggbb\n");
 
                 break;
             }
             case 'u':
-                ui_opts.unlock_indicator = false;
+                ui_opts->unlock_indicator = false;
                 break;
             case 'i':
-                image_path = strdup(optarg);
+                ui_opts->image_path = strdup(optarg);
                 break;
             case 't':
-                ui_opts.tile = true;
+                ui_opts->tile = true;
                 break;
             case 'p':
                 if (!strcmp(optarg, "win")) {
-                    curs_choice = CURS_WIN;
+                    lock_opts->cursor = CURS_WIN;
                 } else if (!strcmp(optarg, "default")) {
-                    curs_choice = CURS_DEFAULT;
+                    lock_opts->cursor = CURS_DEFAULT;
                 } else {
                     errx(EXIT_FAILURE, "i3lock: Invalid pointer type given. Expected one of \"win\" or \"default\".\n");
                 }
                 break;
             case 'e':
-                ignore_empty_password = true;
+                lock_opts->ignore_empty_password = true;
                 break;
             case 0:
                 if (strcmp(longopts[optind].name, "debug") == 0)
                     debug_mode = true;
                 break;
             case 'f':
-                ui_opts.show_failed_attempts = true;
+                ui_opts->show_failed_attempts = true;
                 break;
             default:
                 errx(EXIT_FAILURE, "Syntax: i3lock [-v] [-n] [-b] [-d] [-c color] [-u] [-p win|default]"
                                    " [-i image.png] [-t] [-e] [-I timeout] [-f]");
         }
     }
+
+}
+
+
+int main(int argc, char *argv[]) {
+    struct passwd *pw;
+    char *username;
+    int ret;
+    struct pam_conv conv = {conv_callback, NULL};
+
+    if ((pw = getpwuid(getuid())) == NULL)
+        err(EXIT_FAILURE, "getpwuid() failed");
+    if ((username = pw->pw_name) == NULL)
+        errx(EXIT_FAILURE, "pw->pw_name is NULL.\n");
+
+    parse_args(argc, argv, &ui_opts, &lock_opts);
 
     /* We need (relatively) random numbers for highlighting a random part of
      * the unlock indicator upon keypresses. */
@@ -953,13 +979,13 @@ int main(int argc, char *argv[]) {
     xcb_change_window_attributes(conn, screen->root, XCB_CW_EVENT_MASK,
                                  (uint32_t[]){XCB_EVENT_MASK_STRUCTURE_NOTIFY});
 
-    if (image_path) {
+    if (ui_opts.image_path) {
         /* Create a pixmap to render on, fill it with the background color */
-        img = cairo_image_surface_create_from_png(image_path);
+        img = cairo_image_surface_create_from_png(ui_opts.image_path);
         /* In case loading failed, we just pretend no -i was specified. */
         if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {
             fprintf(stderr, "Could not load image \"%s\": %s\n",
-                    image_path, cairo_status_to_string(cairo_surface_status(img)));
+                    ui_opts.image_path, cairo_status_to_string(cairo_surface_status(img)));
             img = NULL;
         }
     }
@@ -983,7 +1009,7 @@ int main(int argc, char *argv[]) {
         exit(EXIT_SUCCESS);
     }
 
-    cursor = create_cursor(conn, screen, win, curs_choice);
+    cursor = create_cursor(conn, screen, win, lock_opts.cursor);
 
     grab_pointer_and_keyboard(conn, screen, cursor);
     /* Load the keymap again to sync the current modifier state. Since we first

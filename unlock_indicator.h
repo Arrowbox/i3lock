@@ -36,6 +36,7 @@ typedef struct ui_opts {
     bool show_failed_attempts;
     bool unlock_indicator;
     char color[7];
+    char *image_path;
 } ui_opts_t;
 
 xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts);
