@@ -26,6 +26,13 @@
 #define BUTTON_CENTER (BUTTON_RADIUS + 5)
 #define BUTTON_DIAMETER (2 * BUTTON_SPACE)
 
+typedef struct ui_ctx {
+    xcb_visualtype_t *vistype;
+    xcb_screen_t *screen;
+    cairo_surface_t *img;
+} ui_ctx_t;
+
+
 /*******************************************************************************
  * Variables defined in i3lock.c.
  ******************************************************************************/
@@ -44,25 +51,6 @@ extern cairo_surface_t *img;
 
 /* The root screen, to determine the DPI. */
 extern xcb_screen_t *screen;
-
-/*******************************************************************************
- * Local variables.
- ******************************************************************************/
-
-/* Cache the screen’s visual, necessary for creating a Cairo context. */
-static xcb_visualtype_t *vistype;
-
-
-/*
- * Returns the scaling factor of the current screen. E.g., on a 227 DPI MacBook
- * Pro 13" Retina screen, the scaling factor is 227/96 = 2.36.
- *
- */
-static double scaling_factor(void) {
-    const int dpi = (double)screen->height_in_pixels * 25.4 /
-                    (double)screen->height_in_millimeters;
-    return (dpi / 96.0);
-}
 
 static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
 
@@ -83,12 +71,18 @@ static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
     }
 }
 
+static ui_ctx_t ui_ctx;
+ui_ctx_t *ui_initialize(void) {
+    ui_ctx.vistype = get_root_visual_type(screen);
+
+    return &ui_ctx;
+}
 
 void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const status_t *status) {
 
     cairo_t *ctx = cairo_create(canvas);
 
-    cairo_scale(ctx, scaling_factor(), scaling_factor());
+    cairo_scale(ctx, status->dpi/96.0, status->dpi/96.0);
     /* Draw a (centered) circle with transparent background. */
     cairo_set_line_width(ctx, 10.0);
     cairo_arc(ctx,
@@ -273,7 +267,7 @@ void ui_draw_background(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const
 }
 
 void ui_compose(cairo_surface_t *canvas, cairo_surface_t *background, cairo_surface_t *button, const ui_opts_t *ui_opts, const status_t *status) {
-    int button_diameter_physical = ceil(scaling_factor() * BUTTON_DIAMETER);
+    int button_diameter_physical = ceil(status->dpi/96.0 * BUTTON_DIAMETER);
     cairo_t *ctx = cairo_create(canvas);
     cairo_set_source_surface(ctx, background, 0, 0);
     cairo_paint(ctx);
@@ -305,14 +299,12 @@ void ui_compose(cairo_surface_t *canvas, cairo_surface_t *background, cairo_surf
  * resolution and returns it.
  *
  */
-xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts) {
+xcb_pixmap_t draw_image(ui_ctx_t *ctx, const status_t *status, const ui_opts_t *ui_opts) {
     xcb_pixmap_t bg_pixmap = XCB_NONE;
-    int button_diameter_physical = ceil(scaling_factor() * BUTTON_DIAMETER);
+    int button_diameter_physical = ceil(status->dpi/96.0 * BUTTON_DIAMETER);
     DEBUG("scaling_factor is %.f, physical diameter is %d px\n",
-          scaling_factor(), button_diameter_physical);
+          status->dpi/96.0, button_diameter_physical);
 
-    if (!vistype)
-        vistype = get_root_visual_type(screen);
     bg_pixmap = create_bg_pixmap(conn, screen, (uint32_t *)status->resolution, (char *)ui_opts->color);
     /* Initialize cairo: Create one in-memory surface to render the unlock
      * indicator on, create one XCB surface to actually draw (one or more,
@@ -323,7 +315,7 @@ xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts) {
 
     ui_draw_background(background, ui_opts, status);
 
-    cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, vistype, status->resolution[0], status->resolution[1]);
+    cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, ctx->vistype, status->resolution[0], status->resolution[1]);
 
 
     if (ui_opts->unlock_indicator &&
@@ -344,9 +336,9 @@ xcb_pixmap_t draw_image(const status_t *status, const ui_opts_t *ui_opts) {
  * Calls draw_image on a new pixmap and swaps that with the current pixmap
  *
  */
-void redraw_screen(const status_t *status, const ui_opts_t *ui_opts) {
+void redraw_screen(ui_ctx_t *ctx, const status_t *status, const ui_opts_t *ui_opts) {
     DEBUG("redraw_screen(unlock_state = %d, pam_state = %d)\n", status->unlock_state, status->pam_state);
-    xcb_pixmap_t bg_pixmap = draw_image(status, ui_opts);
+    xcb_pixmap_t bg_pixmap = draw_image(ctx, status, ui_opts);
     xcb_change_window_attributes(conn, win, XCB_CW_BACK_PIXMAP, (uint32_t[1]){bg_pixmap});
     /* XXX: Possible optimization: Only update the area in the middle of the
      * screen instead of the whole screen. */

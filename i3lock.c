@@ -86,6 +86,7 @@ static status_t status = {
 };
 
 static pam_ctx_t *pam_ctx;
+static ui_ctx_t *ui_ctx;
 
 xcb_window_t win;
 static xcb_cursor_t cursor;
@@ -202,7 +203,7 @@ ev_timer *stop_timer(ev_timer *timer_obj) {
 static void clear_pam_wrong(EV_P_ ev_timer *w, int revents) {
     DEBUG("clearing pam wrong\n");
     status.pam_state = STATE_PAM_IDLE;
-    redraw_screen(&status, &ui_opts);
+    redraw_screen(ui_ctx, &status, &ui_opts);
 
     /* Now free this timeout. */
     STOP_TIMER(clear_pam_wrong_timeout);
@@ -214,7 +215,7 @@ static void clear_indicator_cb(EV_P_ ev_timer *w, int revents) {
     } else {
         status.unlock_state = STATE_KEY_PRESSED;
     }
-    redraw_screen(&status, &ui_opts);
+    redraw_screen(ui_ctx, &status, &ui_opts);
 
     STOP_TIMER(clear_indicator_timeout);
 }
@@ -228,7 +229,7 @@ static void input_done(void) {
     STOP_TIMER(clear_pam_wrong_timeout);
     status.pam_state = STATE_PAM_VERIFY;
     status.unlock_state = STATE_STARTED;
-    redraw_screen(&status, &ui_opts);
+    redraw_screen(ui_ctx, &status, &ui_opts);
 
     if (pam_check_password(pam_ctx)) {
         exit(0);
@@ -271,7 +272,7 @@ static void input_done(void) {
     status.failed_attempts += 1;
     pam_clear_password(pam_ctx);
     if (ui_opts.unlock_indicator)
-        redraw_screen(&status, &ui_opts);
+        redraw_screen(ui_ctx, &status, &ui_opts);
 
     /* Clear this state after 2 seconds (unless the user enters another
      * password during that time). */
@@ -290,7 +291,7 @@ static void input_done(void) {
 }
 
 static void redraw_timeout(EV_P_ ev_timer *w, int revents) {
-    redraw_screen(&status, &ui_opts);
+    redraw_screen(ui_ctx, &status, &ui_opts);
     STOP_TIMER(w);
 }
 
@@ -362,7 +363,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 return;
             }
             status.unlock_state = STATE_KEY_PRESSED;
-            redraw_screen(&status, &ui_opts);
+            redraw_screen(ui_ctx, &status, &ui_opts);
             input_done();
             skip_repeated_empty_password = true;
             return;
@@ -382,7 +383,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 if (ui_opts.unlock_indicator) {
                     START_TIMER(clear_indicator_timeout, 1.0, clear_indicator_cb);
                     status.unlock_state = STATE_BACKSPACE_ACTIVE;
-                    redraw_screen(&status, &ui_opts);
+                    redraw_screen(ui_ctx, &status, &ui_opts);
                     status.unlock_state = STATE_KEY_PRESSED;
                 }
                 return;
@@ -408,7 +409,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
              * empty. */
             START_TIMER(clear_indicator_timeout, 1.0, clear_indicator_cb);
             status.unlock_state = STATE_BACKSPACE_ACTIVE;
-            redraw_screen(&status, &ui_opts);
+            redraw_screen(ui_ctx, &status, &ui_opts);
             status.unlock_state = STATE_KEY_PRESSED;
             return;
     }
@@ -432,7 +433,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
 
     if (ui_opts.unlock_indicator) {
         status.unlock_state = STATE_KEY_ACTIVE;
-        redraw_screen(&status, &ui_opts);
+        redraw_screen(ui_ctx, &status, &ui_opts);
         status.unlock_state = STATE_KEY_PRESSED;
 
         struct ev_timer *timeout = NULL;
@@ -533,19 +534,20 @@ void handle_screen_resize(void) {
         return;
     }
 
+    status.dpi = (double)screen->height_in_pixels * 25.4 / (double)screen->height_in_millimeters;
     status.resolution[0] = geom->width;
     status.resolution[1] = geom->height;
 
     free(geom);
 
-    redraw_screen(&status, &ui_opts);
+    redraw_screen(ui_ctx, &status, &ui_opts);
 
     uint32_t mask = XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
     xcb_configure_window(conn, win, mask, status.resolution);
     xcb_flush(conn);
 
     xinerama_query_screens();
-    redraw_screen(&status, &ui_opts);
+    redraw_screen(ui_ctx, &status, &ui_opts);
 }
 
 
@@ -863,8 +865,11 @@ int main(int argc, char *argv[]) {
 
     screen = xcb_setup_roots_iterator(xcb_get_setup(conn)).data;
 
+    status.dpi = (double)screen->height_in_pixels * 25.4 / (double)screen->height_in_millimeters;
     status.resolution[0] = screen->width_in_pixels;
     status.resolution[1] = screen->height_in_pixels;
+
+    ui_ctx = ui_initialize();
 
     xcb_change_window_attributes(conn, screen->root, XCB_CW_EVENT_MASK,
                                  (uint32_t[]){XCB_EVENT_MASK_STRUCTURE_NOTIFY});
@@ -881,7 +886,7 @@ int main(int argc, char *argv[]) {
     }
 
     /* Pixmap on which the image is rendered to (if any) */
-    xcb_pixmap_t bg_pixmap = draw_image(&status, &ui_opts);
+    xcb_pixmap_t bg_pixmap = draw_image(ui_ctx, &status, &ui_opts);
 
     /* open the fullscreen window, already with the correct pixmap in place */
     win = open_fullscreen_window(conn, screen, ui_opts.color, bg_pixmap);
