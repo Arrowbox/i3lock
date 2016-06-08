@@ -69,23 +69,26 @@ static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
     }
 }
 
-static ui_ctx_t ui_ctx;
 ui_ctx_t *ui_initialize(const ui_opts_t *opts) {
-    ui_ctx.vistype = get_root_visual_type(screen);
-    memcpy(&ui_ctx.opts, opts, sizeof(struct ui_opts));
+    ui_ctx_t *ctx = calloc(1, sizeof(ui_ctx_t));
+
+    if(ctx == NULL) return NULL;
+
+    ctx->vistype = get_root_visual_type(screen);
+    memcpy(&ctx->opts, opts, sizeof(struct ui_opts));
 
     if (opts->image_path) {
         /* Create a pixmap to render on, fill it with the background color */
-        ui_ctx.img = cairo_image_surface_create_from_png(opts->image_path);
+        ctx->img = cairo_image_surface_create_from_png(opts->image_path);
         /* In case loading failed, we just pretend no -i was specified. */
-        if (cairo_surface_status(ui_ctx.img) != CAIRO_STATUS_SUCCESS) {
+        if (cairo_surface_status(ctx->img) != CAIRO_STATUS_SUCCESS) {
             fprintf(stderr, "Could not load image \"%s\": %s\n",
-                    opts->image_path, cairo_status_to_string(cairo_surface_status(ui_ctx.img)));
-            ui_ctx.img = NULL;
+                    opts->image_path, cairo_status_to_string(cairo_surface_status(ctx->img)));
+            ctx->img = NULL;
         }
     }
 
-    return &ui_ctx;
+    return ctx;
 }
 
 void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *opts, const status_t *status) {
