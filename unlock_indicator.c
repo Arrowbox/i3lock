@@ -43,9 +43,6 @@ extern bool debug_mode;
 /* The lock window. */
 extern xcb_window_t win;
 
-/* A Cairo surface containing the specified image (-i), if any. */
-extern cairo_surface_t *img;
-
 /*******************************************************************************
  * Variables defined in xcb.c.
  ******************************************************************************/
@@ -76,6 +73,17 @@ static ui_ctx_t ui_ctx;
 ui_ctx_t *ui_initialize(const ui_opts_t *ui_opts) {
     ui_ctx.vistype = get_root_visual_type(screen);
     memcpy(&ui_ctx.opts, ui_opts, sizeof(struct ui_opts));
+
+    if (ui_opts->image_path) {
+        /* Create a pixmap to render on, fill it with the background color */
+        ui_ctx.img = cairo_image_surface_create_from_png(ui_opts->image_path);
+        /* In case loading failed, we just pretend no -i was specified. */
+        if (cairo_surface_status(ui_ctx.img) != CAIRO_STATUS_SUCCESS) {
+            fprintf(stderr, "Could not load image \"%s\": %s\n",
+                    ui_opts->image_path, cairo_status_to_string(cairo_surface_status(ui_ctx.img)));
+            ui_ctx.img = NULL;
+        }
+    }
 
     return &ui_ctx;
 }
@@ -237,7 +245,7 @@ void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const sta
     cairo_destroy(ctx);
 }
 
-void ui_draw_background(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const status_t *status) {
+void ui_draw_background(cairo_surface_t *canvas, cairo_surface_t *img,  const ui_opts_t *ui_opts, const status_t *status) {
     cairo_t *ctx = cairo_create(canvas);
     if (img) {
         if (!ui_opts->tile) {
@@ -315,7 +323,7 @@ xcb_pixmap_t draw_image(ui_ctx_t *ctx, const status_t *status) {
 
     cairo_surface_t *background = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, status->resolution[0], status->resolution[1]);
 
-    ui_draw_background(background, &ctx->opts, status);
+    ui_draw_background(background, ctx->img, &ctx->opts, status);
 
     cairo_surface_t *xcb_output = cairo_xcb_surface_create(conn, bg_pixmap, ctx->vistype, status->resolution[0], status->resolution[1]);
 

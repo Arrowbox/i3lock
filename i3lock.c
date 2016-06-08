@@ -105,7 +105,6 @@ static struct xkb_compose_state *xkb_compose_state;
 static uint8_t xkb_base_event;
 static uint8_t xkb_base_error;
 
-cairo_surface_t *img = NULL;
 bool skip_repeated_empty_password = false;
 
 
@@ -203,7 +202,7 @@ ev_timer *stop_timer(ev_timer *timer_obj) {
 static void clear_pam_wrong(EV_P_ ev_timer *w, int revents) {
     DEBUG("clearing pam wrong\n");
     status.pam_state = STATE_PAM_IDLE;
-    redraw_screen(ui_ctx, &status, &ui_opts);
+    redraw_screen(ui_ctx, &status);
 
     /* Now free this timeout. */
     STOP_TIMER(clear_pam_wrong_timeout);
@@ -215,7 +214,7 @@ static void clear_indicator_cb(EV_P_ ev_timer *w, int revents) {
     } else {
         status.unlock_state = STATE_KEY_PRESSED;
     }
-    redraw_screen(ui_ctx, &status, &ui_opts);
+    redraw_screen(ui_ctx, &status);
 
     STOP_TIMER(clear_indicator_timeout);
 }
@@ -229,7 +228,7 @@ static void input_done(void) {
     STOP_TIMER(clear_pam_wrong_timeout);
     status.pam_state = STATE_PAM_VERIFY;
     status.unlock_state = STATE_STARTED;
-    redraw_screen(ui_ctx, &status, &ui_opts);
+    redraw_screen(ui_ctx, &status);
 
     if (pam_check_password(pam_ctx)) {
         exit(0);
@@ -272,7 +271,7 @@ static void input_done(void) {
     status.failed_attempts += 1;
     pam_clear_password(pam_ctx);
     if (ui_opts.unlock_indicator)
-        redraw_screen(ui_ctx, &status, &ui_opts);
+        redraw_screen(ui_ctx, &status);
 
     /* Clear this state after 2 seconds (unless the user enters another
      * password during that time). */
@@ -291,7 +290,7 @@ static void input_done(void) {
 }
 
 static void redraw_timeout(EV_P_ ev_timer *w, int revents) {
-    redraw_screen(ui_ctx, &status, &ui_opts);
+    redraw_screen(ui_ctx, &status);
     STOP_TIMER(w);
 }
 
@@ -363,7 +362,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 return;
             }
             status.unlock_state = STATE_KEY_PRESSED;
-            redraw_screen(ui_ctx, &status, &ui_opts);
+            redraw_screen(ui_ctx, &status);
             input_done();
             skip_repeated_empty_password = true;
             return;
@@ -383,7 +382,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
                 if (ui_opts.unlock_indicator) {
                     START_TIMER(clear_indicator_timeout, 1.0, clear_indicator_cb);
                     status.unlock_state = STATE_BACKSPACE_ACTIVE;
-                    redraw_screen(ui_ctx, &status, &ui_opts);
+                    redraw_screen(ui_ctx, &status);
                     status.unlock_state = STATE_KEY_PRESSED;
                 }
                 return;
@@ -409,7 +408,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
              * empty. */
             START_TIMER(clear_indicator_timeout, 1.0, clear_indicator_cb);
             status.unlock_state = STATE_BACKSPACE_ACTIVE;
-            redraw_screen(ui_ctx, &status, &ui_opts);
+            redraw_screen(ui_ctx, &status);
             status.unlock_state = STATE_KEY_PRESSED;
             return;
     }
@@ -433,7 +432,7 @@ static void handle_key_press(xcb_key_press_event_t *event) {
 
     if (ui_opts.unlock_indicator) {
         status.unlock_state = STATE_KEY_ACTIVE;
-        redraw_screen(ui_ctx, &status, &ui_opts);
+        redraw_screen(ui_ctx, &status);
         status.unlock_state = STATE_KEY_PRESSED;
 
         struct ev_timer *timeout = NULL;
@@ -540,14 +539,14 @@ void handle_screen_resize(void) {
 
     free(geom);
 
-    redraw_screen(ui_ctx, &status, &ui_opts);
+    redraw_screen(ui_ctx, &status);
 
     uint32_t mask = XCB_CONFIG_WINDOW_WIDTH | XCB_CONFIG_WINDOW_HEIGHT;
     xcb_configure_window(conn, win, mask, status.resolution);
     xcb_flush(conn);
 
     xinerama_query_screens();
-    redraw_screen(ui_ctx, &status, &ui_opts);
+    redraw_screen(ui_ctx, &status);
 }
 
 
@@ -869,24 +868,14 @@ int main(int argc, char *argv[]) {
     status.resolution[0] = screen->width_in_pixels;
     status.resolution[1] = screen->height_in_pixels;
 
-    ui_ctx = ui_initialize();
+    ui_ctx = ui_initialize(&ui_opts);
 
     xcb_change_window_attributes(conn, screen->root, XCB_CW_EVENT_MASK,
                                  (uint32_t[]){XCB_EVENT_MASK_STRUCTURE_NOTIFY});
 
-    if (ui_opts.image_path) {
-        /* Create a pixmap to render on, fill it with the background color */
-        img = cairo_image_surface_create_from_png(ui_opts.image_path);
-        /* In case loading failed, we just pretend no -i was specified. */
-        if (cairo_surface_status(img) != CAIRO_STATUS_SUCCESS) {
-            fprintf(stderr, "Could not load image \"%s\": %s\n",
-                    ui_opts.image_path, cairo_status_to_string(cairo_surface_status(img)));
-            img = NULL;
-        }
-    }
 
     /* Pixmap on which the image is rendered to (if any) */
-    xcb_pixmap_t bg_pixmap = draw_image(ui_ctx, &status, &ui_opts);
+    xcb_pixmap_t bg_pixmap = draw_image(ui_ctx, &status);
 
     /* open the fullscreen window, already with the correct pixmap in place */
     win = open_fullscreen_window(conn, screen, ui_opts.color, bg_pixmap);
