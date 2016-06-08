@@ -42,8 +42,8 @@ typedef struct ui_opts {
     char *image_path;
 } ui_opts_t;
 
-xcb_pixmap_t draw_image(ui_ctx_t *ctx, const status_t *status, const ui_opts_t *ui_opts);
-void redraw_screen(ui_ctx_t *ctx, const status_t *status, const ui_opts_t *ui_opts);
-ui_ctx_t *ui_initialize(void);
+xcb_pixmap_t draw_image(ui_ctx_t *ctx, const status_t *status);
+void redraw_screen(ui_ctx_t *ctx, const status_t *status);
+ui_ctx_t *ui_initialize(const ui_opts_t *ui_opts);
 
 #endif
