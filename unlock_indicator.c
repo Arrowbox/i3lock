@@ -26,12 +26,12 @@
 #define BUTTON_CENTER (BUTTON_RADIUS + 5)
 #define BUTTON_DIAMETER (2 * BUTTON_SPACE)
 
-typedef struct ui_ctx {
+struct ui_ctx {
     xcb_visualtype_t *vistype;
     xcb_screen_t *screen;
     cairo_surface_t *img;
     ui_opts_t opts;
-} ui_ctx_t;
+};
 
 
 /*******************************************************************************
@@ -70,17 +70,17 @@ static void mods_to_string(char *buf, size_t len, const modifiers_t *mods) {
 }
 
 static ui_ctx_t ui_ctx;
-ui_ctx_t *ui_initialize(const ui_opts_t *ui_opts) {
+ui_ctx_t *ui_initialize(const ui_opts_t *opts) {
     ui_ctx.vistype = get_root_visual_type(screen);
-    memcpy(&ui_ctx.opts, ui_opts, sizeof(struct ui_opts));
+    memcpy(&ui_ctx.opts, opts, sizeof(struct ui_opts));
 
-    if (ui_opts->image_path) {
+    if (opts->image_path) {
         /* Create a pixmap to render on, fill it with the background color */
-        ui_ctx.img = cairo_image_surface_create_from_png(ui_opts->image_path);
+        ui_ctx.img = cairo_image_surface_create_from_png(opts->image_path);
         /* In case loading failed, we just pretend no -i was specified. */
         if (cairo_surface_status(ui_ctx.img) != CAIRO_STATUS_SUCCESS) {
             fprintf(stderr, "Could not load image \"%s\": %s\n",
-                    ui_opts->image_path, cairo_status_to_string(cairo_surface_status(ui_ctx.img)));
+                    opts->image_path, cairo_status_to_string(cairo_surface_status(ui_ctx.img)));
             ui_ctx.img = NULL;
         }
     }
@@ -88,7 +88,7 @@ ui_ctx_t *ui_initialize(const ui_opts_t *ui_opts) {
     return &ui_ctx;
 }
 
-void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const status_t *status) {
+void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *opts, const status_t *status) {
 
     cairo_t *ctx = cairo_create(canvas);
 
@@ -158,7 +158,7 @@ void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const sta
             text = "wrong!";
             break;
         default:
-            if (ui_opts->show_failed_attempts && status->failed_attempts > 0) {
+            if (opts->show_failed_attempts && status->failed_attempts > 0) {
                 if (status->failed_attempts > 999) {
                     text = "> 999";
                 } else {
@@ -245,10 +245,10 @@ void ui_draw_button(cairo_surface_t *canvas, const ui_opts_t *ui_opts, const sta
     cairo_destroy(ctx);
 }
 
-void ui_draw_background(cairo_surface_t *canvas, cairo_surface_t *img,  const ui_opts_t *ui_opts, const status_t *status) {
+void ui_draw_background(cairo_surface_t *canvas, cairo_surface_t *img,  const ui_opts_t *opts, const status_t *status) {
     cairo_t *ctx = cairo_create(canvas);
     if (img) {
-        if (!ui_opts->tile) {
+        if (!opts->tile) {
             cairo_set_source_surface(ctx, img, 0, 0);
             cairo_paint(ctx);
         } else {
@@ -262,9 +262,9 @@ void ui_draw_background(cairo_surface_t *canvas, cairo_surface_t *img,  const ui
             cairo_pattern_destroy(pattern);
         }
     } else {
-        char strgroups[3][3] = {{ui_opts->color[0], ui_opts->color[1], '\0'},
-                                {ui_opts->color[2], ui_opts->color[3], '\0'},
-                                {ui_opts->color[4], ui_opts->color[5], '\0'}};
+        char strgroups[3][3] = {{opts->color[0], opts->color[1], '\0'},
+                                {opts->color[2], opts->color[3], '\0'},
+                                {opts->color[4], opts->color[5], '\0'}};
         uint32_t rgb16[3] = {(strtol(strgroups[0], NULL, 16)),
                              (strtol(strgroups[1], NULL, 16)),
                              (strtol(strgroups[2], NULL, 16))};
@@ -276,7 +276,7 @@ void ui_draw_background(cairo_surface_t *canvas, cairo_surface_t *img,  const ui
 
 }
 
-void ui_compose(cairo_surface_t *canvas, cairo_surface_t *background, cairo_surface_t *button, const ui_opts_t *ui_opts, const status_t *status) {
+void ui_compose(cairo_surface_t *canvas, cairo_surface_t *background, cairo_surface_t *button, const status_t *status) {
     int button_diameter_physical = ceil(status->dpi/96.0 * BUTTON_DIAMETER);
     cairo_t *ctx = cairo_create(canvas);
     cairo_set_source_surface(ctx, background, 0, 0);
@@ -334,7 +334,7 @@ xcb_pixmap_t draw_image(ui_ctx_t *ctx, const status_t *status) {
     }
 
 
-    ui_compose(xcb_output, background, button, &ctx->opts, status);
+    ui_compose(xcb_output, background, button, status);
 
     cairo_surface_destroy(xcb_output);
     cairo_surface_destroy(button);
